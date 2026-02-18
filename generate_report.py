@@ -14,8 +14,11 @@ Usage:
 """
 
 import csv
+import io
 import os
+import re
 import sys
+import zipfile
 from datetime import datetime
 from pathlib import Path
 
@@ -197,6 +200,53 @@ def build_report(event: dict, attendees: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def generate_badges(attendees: list[dict], output_dir: Path, stem: str) -> None:
+    """Generate a badges CSV and matching .lbx file for P-touch Editor.
+
+    The .lbx is a copy of the template with its database reference updated to
+    point to the CSV sitting next to it. Open the .lbx in P-touch Editor and
+    use Print > Print All Records to print every badge.
+    """
+    lbx_template = Path("badges.lbx")
+    if not lbx_template.exists():
+        print("badges.lbx not found — skipping badge generation.")
+        return
+
+    # Write the badges CSV with the column names the template expects
+    csv_path = output_dir / f"{stem}.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["First Name", "Surname", "Company"])
+        for attendee in attendees:
+            profile = attendee.get("profile", {})
+            writer.writerow([
+                profile.get("first_name", ""),
+                profile.get("last_name", ""),
+                profile.get("company", ""),
+            ])
+
+    # Build a new .lbx pointing to the CSV — replace only the path attributes
+    # using string substitution to keep the original XML structure intact.
+    with zipfile.ZipFile(lbx_template, "r") as zin:
+        xml = zin.read("label.xml").decode("utf-8")
+        other_files = {n: zin.read(n) for n in zin.namelist() if n != "label.xml"}
+
+    abs_csv = str(csv_path.resolve())
+    xml = re.sub(r'databasePath="[^"]*"', f'databasePath="{abs_csv}"', xml)
+    xml = re.sub(r'mergeTable="[^"]*"', f'mergeTable="{csv_path.name}"', xml)
+    xml = re.sub(
+        r'(<database:dbTable name=")[^"]*(")',
+        rf'\g<1>{csv_path.name}\g<2>',
+        xml,
+    )
+
+    lbx_path = output_dir / f"{stem}.lbx"
+    with zipfile.ZipFile(lbx_path, "w", zipfile.ZIP_DEFLATED) as zout:
+        zout.writestr("label.xml", xml.encode("utf-8"))
+        for name, data in other_files.items():
+            zout.writestr(name, data)
+
+
 def main():
     token = os.environ.get("EVENTBRITE_TOKEN")
     if not token:
@@ -239,6 +289,11 @@ def main():
     )
     write_csv(confirmed, csv_path)
     print(f"CSV written to:      {csv_path}")
+
+    # Fixed filename so P-touch Editor retains its CSV access permission
+    # across runs (macOS security-scoped bookmark stored by P-touch is path-based).
+    generate_badges(confirmed, output_dir, "badges")
+    print(f"Badges written to:   {output_dir / 'badges'}.lbx")
 
 
 if __name__ == "__main__":
