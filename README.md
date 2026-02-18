@@ -1,6 +1,6 @@
 # Eventbrite Report Tool
 
-Generates a report for your next upcoming Eventbrite event. The report includes the event title, date, location, total number of registrations, and a list of confirmed attendees (first name, last name, company) sorted alphabetically by first name.
+Generates reports for Eventbrite events. Per-event reports include the event title, date, location, total number of registrations, and a list of confirmed attendees (first name, last name, company) sorted alphabetically by first name. An attendance overview report shows how many events each person has attended across all past events.
 
 The following files are written to the `output/` folder:
 
@@ -58,6 +58,24 @@ Open `.env` and replace `your_private_token_here` with your actual Eventbrite AP
 ```bash
 source .venv/bin/activate
 python3 generate_report.py --past
+```
+
+**Attendance overview** across all past events:
+```bash
+source .venv/bin/activate
+python3 generate_report.py --attendance
+```
+
+Generates `output/attendance_report.md/pdf/csv` with each unique attendee ranked by number of events attended.
+
+### Merging name duplicates
+
+If the same person appears under slightly different names (typos, missing accents), create a `name_mappings.json` file (gitignored — copy from `name_mappings.example.json`) and add entries mapping the wrong spelling to the correct one:
+
+```json
+{
+  "Jon Doe": "John Doe"
+}
 ```
 
 Output files are saved to the `output/` folder.
