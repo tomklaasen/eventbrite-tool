@@ -10,9 +10,11 @@ Requirements:
 Usage:
     cp .env.example .env
     # Edit .env and fill in your token
-    python3 generate_report.py
+    python3 generate_report.py           # next upcoming event (+ badges)
+    python3 generate_report.py --past    # all past events (no badges)
 """
 
+import argparse
 import csv
 import io
 import os
@@ -56,6 +58,26 @@ def fetch_organization_id(token: str) -> str:
     if not orgs:
         sys.exit("No organizations found for your account.")
     return orgs[0]["id"]
+
+
+def fetch_all_past_events(token: str, org_id: str) -> list[dict]:
+    """Return all ended/completed events for the organization, oldest first."""
+    events = []
+    url = f"{API_BASE}/organizations/{org_id}/events/"
+    params = {
+        "status": "ended,completed",
+        "order_by": "start_asc",
+        "expand": "venue",
+    }
+    while url:
+        response = requests.get(url, headers=get_headers(token), params=params)
+        response.raise_for_status()
+        data = response.json()
+        events.extend(data.get("events", []))
+        pagination = data.get("pagination", {})
+        url = pagination.get("next_url") if pagination.get("has_more_items") else None
+        params = {}
+    return events
 
 
 def fetch_next_event(token: str, org_id: str) -> dict:
@@ -247,7 +269,51 @@ def generate_badges(attendees: list[dict], output_dir: Path, stem: str) -> None:
             zout.writestr(name, data)
 
 
+def process_event(token: str, event: dict, output_dir: Path, badges: bool = False) -> None:
+    """Fetch attendees and write all report files for a single event."""
+    title = event.get("name", {}).get("text", event["id"])
+    print(f"  Processing: {title}")
+
+    attendees = fetch_all_attendees(token, event["id"])
+    attendees.append({
+        "status": "Attending",
+        "profile": {"first_name": "Tom", "last_name": "Klaasen", "company": "SoftwareCaptains"},
+    })
+
+    report = build_report(event, attendees)
+
+    safe_title = "".join(c if c.isalnum() or c in " -_" else "" for c in title)
+    safe_title = safe_title.strip().replace(" ", "_")[:60]
+    event_date = event.get("start", {}).get("local", "")[:10]
+    output_path = output_dir / f"report_{event_date}_{safe_title}.md"
+    output_path.write_text(report, encoding="utf-8")
+    print(f"    Markdown: {output_path}")
+
+    markdown_to_pdf(report, output_path.with_suffix(".pdf"))
+    print(f"    PDF:      {output_path.with_suffix('.pdf')}")
+
+    confirmed = sorted(
+        (a for a in attendees if a.get("status", "").lower() in ("attending", "checked_in")),
+        key=lambda a: a.get("profile", {}).get("first_name", "").lower(),
+    )
+    write_csv(confirmed, output_path.with_suffix(".csv"))
+    print(f"    CSV:      {output_path.with_suffix('.csv')}")
+
+    if badges:
+        # Fixed filename so P-touch Editor retains its CSV access permission
+        # across runs (macOS security-scoped bookmark stored by P-touch is path-based).
+        generate_badges(confirmed, output_dir, "badges")
+        print(f"    Badges:   {output_dir / 'badges'}.lbx")
+
+
 def main():
+    parser = argparse.ArgumentParser(description="Generate Eventbrite event reports.")
+    parser.add_argument(
+        "--past", action="store_true",
+        help="Generate reports for all past events instead of the next upcoming one.",
+    )
+    args = parser.parse_args()
+
     token = os.environ.get("EVENTBRITE_TOKEN")
     if not token:
         sys.exit(
@@ -256,48 +322,24 @@ def main():
             "You can create a token at https://www.eventbrite.com/platform/api-keys"
         )
 
-    print("Fetching your next event...")
-    org_id = fetch_organization_id(token)
-    event = fetch_next_event(token, org_id)
-    event_id = event["id"]
-    title = event.get("name", {}).get("text", event_id)
-
-    print(f"Found: {title}")
-    print("Fetching attendees...")
-    attendees = fetch_all_attendees(token, event_id)
-    attendees.append({
-        "status": "Attending",
-        "profile": {"first_name": "Tom", "last_name": "Klaasen", "company": "SoftwareCaptains"},
-    })
-
-    report = build_report(event, attendees)
-
-    # Write report to a file named after the event id
-    safe_title = "".join(c if c.isalnum() or c in " -_" else "" for c in title)
-    safe_title = safe_title.strip().replace(" ", "_")[:60]
-    event_date = event.get("start", {}).get("local", "")[:10]  # YYYY-MM-DD
     output_dir = Path("output")
     output_dir.mkdir(exist_ok=True)
-    output_path = output_dir / f"report_{event_date}_{safe_title}.md"
-    output_path.write_text(report, encoding="utf-8")
-    print(f"Markdown written to: {output_path}")
 
-    pdf_path = output_path.with_suffix(".pdf")
-    markdown_to_pdf(report, pdf_path)
-    print(f"PDF written to:      {pdf_path}")
+    org_id = fetch_organization_id(token)
 
-    csv_path = output_path.with_suffix(".csv")
-    confirmed = sorted(
-        (a for a in attendees if a.get("status", "").lower() in ("attending", "checked_in")),
-        key=lambda a: a.get("profile", {}).get("first_name", "").lower(),
-    )
-    write_csv(confirmed, csv_path)
-    print(f"CSV written to:      {csv_path}")
-
-    # Fixed filename so P-touch Editor retains its CSV access permission
-    # across runs (macOS security-scoped bookmark stored by P-touch is path-based).
-    generate_badges(confirmed, output_dir, "badges")
-    print(f"Badges written to:   {output_dir / 'badges'}.lbx")
+    if args.past:
+        print("Fetching all past events...")
+        events = fetch_all_past_events(token, org_id)
+        if not events:
+            sys.exit("No past events found for your organization.")
+        print(f"Found {len(events)} past event(s).\n")
+        for event in events:
+            process_event(token, event, output_dir, badges=False)
+            print()
+    else:
+        print("Fetching your next event...")
+        event = fetch_next_event(token, org_id)
+        process_event(token, event, output_dir, badges=True)
 
 
 if __name__ == "__main__":
