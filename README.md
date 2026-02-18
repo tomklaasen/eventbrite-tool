@@ -49,8 +49,15 @@ Open `.env` and replace `your_private_token_here` with your actual Eventbrite AP
 
 ## Usage
 
+**Next upcoming event** (generates report + badges):
 ```bash
 ./start.sh
 ```
 
-This activates the virtual environment and runs the script. Output files are saved to the `output/` folder.
+**All past events** (generates reports only, no badges):
+```bash
+source .venv/bin/activate
+python3 generate_report.py --past
+```
+
+Output files are saved to the `output/` folder.
