@@ -1,3 +1,4 @@
 .env
 .venv
 output/
+name_mappings.json

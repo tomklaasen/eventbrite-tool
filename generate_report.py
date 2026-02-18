@@ -17,9 +17,11 @@ Usage:
 import argparse
 import csv
 import io
+import json
 import os
 import re
 import sys
+import unicodedata
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -269,6 +271,105 @@ def generate_badges(attendees: list[dict], output_dir: Path, stem: str) -> None:
             zout.writestr(name, data)
 
 
+def load_name_mappings() -> dict[str, tuple[str, str]]:
+    """Load name_mappings.json and return a dict of normalized_key -> (first, last)."""
+    path = Path("name_mappings.json")
+    if not path.exists():
+        return {}
+    mappings = {}
+    for typo, canonical in json.loads(path.read_text(encoding="utf-8")).items():
+        parts = canonical.strip().split(None, 1)
+        first = parts[0] if parts else ""
+        last  = parts[1] if len(parts) > 1 else ""
+        mappings[_normalize_name(typo)] = (first, last)
+    return mappings
+
+
+def _normalize_name(s: str) -> str:
+    """Lowercase and strip diacritics for deduplication keys."""
+    return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode().lower()
+
+
+def build_attendance_report(token: str, org_id: str) -> tuple[str, list[dict]]:
+    """Return a Markdown report and sorted rows of attendance counts per person."""
+    print("Fetching all past events...")
+    events = fetch_all_past_events(token, org_id)
+    if not events:
+        sys.exit("No past events found for your organization.")
+    print(f"Found {len(events)} past event(s). Fetching attendees...\n")
+
+    name_mappings = load_name_mappings()
+
+    # Keyed by normalized full name for deduplication
+    counts: dict[str, dict] = {}
+
+    for event in events:
+        title = event.get("name", {}).get("text", event["id"])
+        event_date = event.get("start", {}).get("local", "")[:10]
+        print(f"  {event_date}  {title}")
+
+        attendees = fetch_all_attendees(token, event["id"])
+
+        for attendee in attendees:
+            if attendee.get("status", "").lower() not in ("attending", "checked_in"):
+                continue
+            profile = attendee.get("profile", {})
+            first = profile.get("first_name", "").strip()
+            last  = profile.get("last_name", "").strip()
+            key = f"{_normalize_name(first)} {_normalize_name(last)}".strip()
+            if not key:
+                continue
+            # Apply typo mapping if present
+            if key in name_mappings:
+                first, last = name_mappings[key]
+                key = f"{_normalize_name(first)} {_normalize_name(last)}".strip()
+            if key not in counts:
+                counts[key] = {
+                    "first_name": first,
+                    "last_name":  last,
+                    "company":    profile.get("company", ""),
+                    "count":      0,
+                }
+            elif not counts[key]["company"] and profile.get("company"):
+                # Fill in company if we didn't have it yet
+                counts[key]["company"] = profile.get("company", "")
+            counts[key]["count"] += 1
+
+    rows = sorted(
+        counts.values(),
+        key=lambda r: (-r["count"], r["first_name"].lower()),
+    )
+    total_people = len(rows)
+    total_events = len(events)
+
+    lines = [
+        "# Attendance Overview",
+        "",
+        f"**Total events:** {total_events}  ",
+        f"**Total unique attendees:** {total_people}  ",
+        "",
+        "---",
+        "",
+        "## Attendees by number of events",
+        "",
+        "| # | First Name | Last Name | Company | Events attended |",
+        "|---|------------|-----------|---------|-----------------|",
+    ]
+    for i, row in enumerate(rows, start=1):
+        lines.append(
+            f"| {i} | {row['first_name']} | {row['last_name']} | {row['company']} | {row['count']} |"
+        )
+
+    lines += [
+        "",
+        "---",
+        "",
+        f"*Report generated on {datetime.now().strftime('%Y-%m-%d at %H:%M')}*",
+    ]
+
+    return "\n".join(lines), rows
+
+
 def process_event(token: str, event: dict, output_dir: Path, badges: bool = False) -> None:
     """Fetch attendees and write all report files for a single event."""
     title = event.get("name", {}).get("text", event["id"])
@@ -312,6 +413,10 @@ def main():
         "--past", action="store_true",
         help="Generate reports for all past events instead of the next upcoming one.",
     )
+    parser.add_argument(
+        "--attendance", action="store_true",
+        help="Generate an attendance overview report across all past events.",
+    )
     args = parser.parse_args()
 
     token = os.environ.get("EVENTBRITE_TOKEN")
@@ -327,7 +432,24 @@ def main():
 
     org_id = fetch_organization_id(token)
 
-    if args.past:
+    if args.attendance:
+        report, rows = build_attendance_report(token, org_id)
+        output_path = output_dir / "attendance_report.md"
+        output_path.write_text(report, encoding="utf-8")
+        print(f"\nMarkdown written to: {output_path}")
+
+        markdown_to_pdf(report, output_path.with_suffix(".pdf"))
+        print(f"PDF written to:      {output_path.with_suffix('.pdf')}")
+
+        csv_path = output_path.with_suffix(".csv")
+        with csv_path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["#", "First Name", "Last Name", "Company", "Events attended"])
+            for i, row in enumerate(rows, start=1):
+                writer.writerow([i, row["first_name"], row["last_name"], row["company"], row["count"]])
+        print(f"CSV written to:      {csv_path}")
+
+    elif args.past:
         print("Fetching all past events...")
         events = fetch_all_past_events(token, org_id)
         if not events:
