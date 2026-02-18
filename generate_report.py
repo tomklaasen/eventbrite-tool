@@ -265,6 +265,10 @@ def main():
     print(f"Found: {title}")
     print("Fetching attendees...")
     attendees = fetch_all_attendees(token, event_id)
+    attendees.append({
+        "status": "Attending",
+        "profile": {"first_name": "Tom", "last_name": "Klaasen", "company": "SoftwareCaptains"},
+    })
 
     report = build_report(event, attendees)
 
