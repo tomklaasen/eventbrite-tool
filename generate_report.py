@@ -106,10 +106,14 @@ def fetch_all_attendees(token: str, event_id: str) -> list[dict]:
     """Fetch every attendee for the given event, handling pagination."""
     attendees = []
     url = f"{API_BASE}/events/{event_id}/attendees/"
-    params = {}
+    params = {"expand": "answers"}
 
     while url:
         response = requests.get(url, headers=get_headers(token), params=params)
+        if response.status_code == 400 and params.get("expand") == "answers":
+            print("  Warning: expand=answers not supported, retrying without it.")
+            params.pop("expand")
+            response = requests.get(url, headers=get_headers(token), params=params)
         response.raise_for_status()
         data = response.json()
 
@@ -140,7 +144,7 @@ def format_date(iso_string: str) -> str:
 def write_csv(attendees: list[dict], csv_path: Path) -> None:
     with csv_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["#", "First Name", "Last Name", "Company"])
+        writer.writerow(["#", "First Name", "Last Name", "Company", "Diet"])
         for i, attendee in enumerate(attendees, start=1):
             profile = attendee.get("profile", {})
             writer.writerow([
@@ -148,6 +152,7 @@ def write_csv(attendees: list[dict], csv_path: Path) -> None:
                 profile.get("first_name", ""),
                 profile.get("last_name", ""),
                 profile.get("company", ""),
+                _get_diet_answer(attendee),
             ])
 
 
@@ -201,8 +206,8 @@ def build_report(event: dict, attendees: list[dict]) -> str:
         "",
         "## Attendees",
         "",
-        "| # | First Name | Last Name | Company |",
-        "|---|------------|-----------|---------|",
+        "| # | First Name | Last Name | Company | Diet |",
+        "|---|------------|-----------|---------|------|",
     ]
 
     confirmed.sort(key=lambda a: a.get("profile", {}).get("first_name", "").lower())
@@ -212,7 +217,8 @@ def build_report(event: dict, attendees: list[dict]) -> str:
         first = profile.get("first_name", "—") or "—"
         last = profile.get("last_name", "—") or "—"
         company = profile.get("company", "—") or "—"
-        lines.append(f"| {i} | {first} | {last} | {company} |")
+        diet = _get_diet_answer(attendee)
+        lines.append(f"| {i} | {first} | {last} | {company} | {diet} |")
 
     lines += [
         "",
@@ -288,6 +294,16 @@ def load_name_mappings() -> dict[str, tuple[str, str]]:
 def _normalize_name(s: str) -> str:
     """Lowercase and strip diacritics for deduplication keys."""
     return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode().lower()
+
+
+def _get_diet_answer(attendee: dict) -> str:
+    """Return the diet restriction answer for an attendee, or '—' if none."""
+    for answer in attendee.get("answers", []):
+        question = answer.get("question", "")
+        if "dieet" in question.lower():
+            text = answer.get("answer", "").strip()
+            return text if text else "—"
+    return "—"
 
 
 def build_attendance_report(token: str, org_id: str) -> tuple[str, list[dict]]:
