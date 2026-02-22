@@ -2,3 +2,4 @@
 .venv
 output/
 name_mappings.json
+speakers.json

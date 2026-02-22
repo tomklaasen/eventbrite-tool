@@ -178,7 +178,7 @@ def markdown_to_pdf(md_text: str, pdf_path: Path) -> None:
     HTML(string=html).write_pdf(pdf_path)
 
 
-def build_report(event: dict, attendees: list[dict], include_diet: bool = True) -> str:
+def build_report(event: dict, attendees: list[dict], include_diet: bool = True, speaker: dict | None = None) -> str:
     title = event.get("name", {}).get("text", "Untitled Event")
     start_iso = event.get("start", {}).get("local", "")
     date_str = format_date(start_iso)
@@ -207,6 +207,18 @@ def build_report(event: dict, attendees: list[dict], include_diet: bool = True) 
         "",
         f"**Date:** {date_str}  ",
         f"**Location:** {location}  ",
+    ]
+
+    if speaker:
+        name = f"{speaker.get('first_name', '')} {speaker.get('last_name', '')}".strip()
+        if name:
+            company = speaker.get("company", "")
+            if company:
+                lines.append(f"**Speaker:** {name} ({company})  ")
+            else:
+                lines.append(f"**Speaker:** {name}  ")
+
+    lines += [
         f"**Registrations:** {total}  ",
         "",
         "---",
@@ -240,7 +252,7 @@ def build_report(event: dict, attendees: list[dict], include_diet: bool = True) 
     return "\n".join(lines)
 
 
-def generate_badges(attendees: list[dict], output_dir: Path, stem: str) -> None:
+def generate_badges(attendees: list[dict], output_dir: Path, stem: str, speaker: dict | None = None) -> None:
     """Generate a badges CSV and matching .lbx file for P-touch Editor.
 
     The .lbx is a copy of the template with its database reference updated to
@@ -257,6 +269,12 @@ def generate_badges(attendees: list[dict], output_dir: Path, stem: str) -> None:
     with csv_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["First Name", "Surname", "Company"])
+        if speaker and (speaker.get("first_name") or speaker.get("last_name")):
+            writer.writerow([
+                speaker.get("first_name", ""),
+                speaker.get("last_name", ""),
+                speaker.get("company", ""),
+            ])
         for attendee in attendees:
             profile = attendee.get("profile", {})
             writer.writerow([
@@ -285,6 +303,14 @@ def generate_badges(attendees: list[dict], output_dir: Path, stem: str) -> None:
         zout.writestr("label.xml", xml.encode("utf-8"))
         for name, data in other_files.items():
             zout.writestr(name, data)
+
+
+def load_speakers() -> dict:
+    """Load speakers.json and return the full dict. Returns {} if file doesn't exist."""
+    path = Path("speakers.json")
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def load_name_mappings() -> dict[str, tuple[str, str]]:
@@ -396,18 +422,38 @@ def build_attendance_report(token: str, org_id: str) -> tuple[str, list[dict]]:
     return "\n".join(lines), rows
 
 
-def process_event(token: str, event: dict, output_dir: Path, badges: bool = False) -> None:
+def process_event(token: str, event: dict, output_dir: Path, badges: bool = False, speakers: dict | None = None) -> None:
     """Fetch attendees and write all report files for a single event."""
     title = event.get("name", {}).get("text", event["id"])
-    print(f"  Processing: {title}")
+    event_id = event["id"]
+    print(f"  Processing: {title} (ID: {event_id})")
 
-    attendees = fetch_all_attendees(token, event["id"])
+    if speakers is None:
+        speakers = {}
+    speaker = speakers.get(event_id)
+    if speaker is None:
+        event_date = event.get("start", {}).get("local", "")[:10]
+        new_entry = {
+            "event": title,
+            "date": event_date,
+            "first_name": "",
+            "last_name": "",
+            "company": "",
+        }
+        # Insert at the top so the newest entry is easiest to find
+        speakers = {event_id: new_entry, **speakers}
+        Path("speakers.json").write_text(
+            json.dumps(speakers, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+        speaker = None
+
+    attendees = fetch_all_attendees(token, event_id)
     attendees.append({
         "status": "Attending",
         "profile": {"first_name": "Tom", "last_name": "Klaasen", "company": "SoftwareCaptains"},
     })
 
-    report = build_report(event, attendees)
+    report = build_report(event, attendees, speaker=speaker)
 
     safe_title = "".join(c if c.isalnum() or c in " -_" else "" for c in title)
     safe_title = safe_title.strip().replace(" ", "_")[:60]
@@ -419,7 +465,7 @@ def process_event(token: str, event: dict, output_dir: Path, badges: bool = Fals
     markdown_to_pdf(report, output_path.with_suffix(".pdf"))
     print(f"    PDF:      {output_path.with_suffix('.pdf')}")
 
-    speaker_report = build_report(event, attendees, include_diet=False)
+    speaker_report = build_report(event, attendees, include_diet=False, speaker=speaker)
     speaker_pdf = output_dir / f"report_{event_date}_{safe_title}_speaker.pdf"
     markdown_to_pdf(speaker_report, speaker_pdf)
     print(f"    Speaker:  {speaker_pdf}")
@@ -434,7 +480,7 @@ def process_event(token: str, event: dict, output_dir: Path, badges: bool = Fals
     if badges:
         # Fixed filename so P-touch Editor retains its CSV access permission
         # across runs (macOS security-scoped bookmark stored by P-touch is path-based).
-        generate_badges(confirmed, output_dir, "badges")
+        generate_badges(confirmed, output_dir, "badges", speaker=speaker)
         print(f"    Badges:   {output_dir / 'badges'}.lbx")
 
 
@@ -486,13 +532,15 @@ def main():
         if not events:
             sys.exit("No past events found for your organization.")
         print(f"Found {len(events)} past event(s).\n")
+        speakers = load_speakers()
         for event in events:
-            process_event(token, event, output_dir, badges=False)
+            process_event(token, event, output_dir, badges=False, speakers=speakers)
             print()
     else:
         print("Fetching your next event...")
         event = fetch_next_event(token, org_id)
-        process_event(token, event, output_dir, badges=True)
+        speakers = load_speakers()
+        process_event(token, event, output_dir, badges=True, speakers=speakers)
 
 
 if __name__ == "__main__":
