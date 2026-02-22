@@ -8,6 +8,7 @@ The following files are written to the `output/` folder:
 |------|-------------|
 | `report_<date>_<title>.md` | Markdown report |
 | `report_<date>_<title>.pdf` | PDF version of the report |
+| `report_<date>_<title>_speaker.pdf` | PDF for speakers (without diet column) |
 | `report_<date>_<title>.csv` | Attendee list as a spreadsheet |
 | `badges.lbx` | Badge template for Brother P-touch Editor (mail merge) |
 | `badges.csv` | Attendee data used by the badge template |

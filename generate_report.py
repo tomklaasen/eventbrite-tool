@@ -178,7 +178,7 @@ def markdown_to_pdf(md_text: str, pdf_path: Path) -> None:
     HTML(string=html).write_pdf(pdf_path)
 
 
-def build_report(event: dict, attendees: list[dict]) -> str:
+def build_report(event: dict, attendees: list[dict], include_diet: bool = True) -> str:
     title = event.get("name", {}).get("text", "Untitled Event")
     start_iso = event.get("start", {}).get("local", "")
     date_str = format_date(start_iso)
@@ -195,6 +195,13 @@ def build_report(event: dict, attendees: list[dict]) -> str:
     ]
     total = len(confirmed)
 
+    if include_diet:
+        header = "| # | First Name | Last Name | Company | Diet |"
+        separator = "|---|------------|-----------|---------|------|"
+    else:
+        header = "| # | First Name | Last Name | Company |"
+        separator = "|---|------------|-----------|---------|"
+
     lines = [
         f"# {title}",
         "",
@@ -206,8 +213,8 @@ def build_report(event: dict, attendees: list[dict]) -> str:
         "",
         "## Attendees",
         "",
-        "| # | First Name | Last Name | Company | Diet |",
-        "|---|------------|-----------|---------|------|",
+        header,
+        separator,
     ]
 
     confirmed.sort(key=lambda a: a.get("profile", {}).get("first_name", "").lower())
@@ -217,8 +224,11 @@ def build_report(event: dict, attendees: list[dict]) -> str:
         first = profile.get("first_name", "—") or "—"
         last = profile.get("last_name", "—") or "—"
         company = profile.get("company", "—") or "—"
-        diet = _get_diet_answer(attendee)
-        lines.append(f"| {i} | {first} | {last} | {company} | {diet} |")
+        if include_diet:
+            diet = _get_diet_answer(attendee)
+            lines.append(f"| {i} | {first} | {last} | {company} | {diet} |")
+        else:
+            lines.append(f"| {i} | {first} | {last} | {company} |")
 
     lines += [
         "",
@@ -408,6 +418,11 @@ def process_event(token: str, event: dict, output_dir: Path, badges: bool = Fals
 
     markdown_to_pdf(report, output_path.with_suffix(".pdf"))
     print(f"    PDF:      {output_path.with_suffix('.pdf')}")
+
+    speaker_report = build_report(event, attendees, include_diet=False)
+    speaker_pdf = output_dir / f"report_{event_date}_{safe_title}_speaker.pdf"
+    markdown_to_pdf(speaker_report, speaker_pdf)
+    print(f"    Speaker:  {speaker_pdf}")
 
     confirmed = sorted(
         (a for a in attendees if a.get("status", "").lower() in ("attending", "checked_in")),
