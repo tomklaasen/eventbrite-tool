@@ -1,6 +1,6 @@
 # Eventbrite Report Tool
 
-Generates reports for Eventbrite events. Per-event reports include the event title, date, location, total number of registrations, and a list of confirmed attendees (first name, last name, company, diet restrictions) sorted alphabetically by first name. Diet restrictions are pulled from the Eventbrite custom question containing "dieet". An attendance overview report shows how many events each person has attended across all past events.
+Generates reports for Eventbrite events. Per-event reports include the event title, date, location, optional speaker info, total number of registrations, and a list of confirmed attendees (first name, last name, company, diet restrictions) sorted alphabetically by first name. Diet restrictions are pulled from the Eventbrite custom question containing "dieet". An attendance overview report shows how many events each person has attended across all past events.
 
 The following files are written to the `output/` folder:
 
@@ -78,5 +78,23 @@ If the same person appears under slightly different names (typos, missing accent
   "Jon Doe": "John Doe"
 }
 ```
+
+### Speaker info
+
+To show a speaker's name and company in the report header and as the first badge, create a `speakers.json` file (gitignored — copy from `speakers.example.json`):
+
+```json
+{
+  "1234567890": {
+    "event": "CTO Club: Example Event",
+    "date": "2026-01-15",
+    "first_name": "Jan",
+    "last_name": "Janssens",
+    "company": "Acme Corp"
+  }
+}
+```
+
+The key is the Eventbrite event ID. When you run the script, it prints the event ID and automatically adds an empty entry to `speakers.json` for any event that doesn't have one yet — just fill in the name and company and re-run.
 
 Output files are saved to the `output/` folder.
