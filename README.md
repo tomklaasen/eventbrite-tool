@@ -1,6 +1,6 @@
 # Eventbrite Report Tool
 
-Generates reports for Eventbrite events. Per-event reports include the event title, date, location, total number of registrations, and a list of confirmed attendees (first name, last name, company) sorted alphabetically by first name. An attendance overview report shows how many events each person has attended across all past events.
+Generates reports for Eventbrite events. Per-event reports include the event title, date, location, total number of registrations, and a list of confirmed attendees (first name, last name, company, diet restrictions) sorted alphabetically by first name. Diet restrictions are pulled from the Eventbrite custom question containing "dieet". An attendance overview report shows how many events each person has attended across all past events.
 
 The following files are written to the `output/` folder:
 
