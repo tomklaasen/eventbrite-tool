@@ -3,3 +3,4 @@
 output/
 name_mappings.json
 speakers.json
+__pycache__/
