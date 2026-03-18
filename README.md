@@ -98,3 +98,49 @@ To show a speaker's name and company in the report header and as the first badge
 The key is the Eventbrite event ID. When you run the script, it prints the event ID and automatically adds an empty entry to `speakers.json` for any event that doesn't have one yet — just fill in the name and company and re-run.
 
 Output files are saved to the `output/` folder.
+
+## Daily digest email
+
+`daily_digest.py` sends an email when new registrations have come in since the last run. It only sends when there is something new.
+
+The email shows:
+- The new registrations since the last run
+- The full attendee list with the current total
+
+### Setup
+
+1. **Create a Gmail App Password:**
+   - Go to your Google Account → Security → 2-Step Verification → App passwords
+   - Generate a new app password for "Mail"
+
+2. **Add to your `.env`:**
+
+```
+GMAIL_USER=you@gmail.com
+GMAIL_APP_PASSWORD=xxxx xxxx xxxx xxxx
+DIGEST_TO=recipient@example.com
+```
+
+3. **Prime the snapshot** by running once manually — this records all current registrations as known so only future registrations are treated as new:
+
+```bash
+./start_digest.sh
+```
+
+4. **Schedule with cron** (`crontab -e`):
+
+```
+0 18 * * * /path/to/eventbrite-tool/start_digest.sh >> /tmp/eventbrite_digest.log 2>&1
+```
+
+The snapshot is saved to `output/snapshot_<event_id>.json` and updated on each run.
+
+### Monitoring with healthchecks.io
+
+To monitor the cron job, create a check at [healthchecks.io](https://healthchecks.io), set its schedule to match your cron interval, and add the ping URL to `.env`:
+
+```
+HEALTHCHECKS_URL=https://hc-ping.com/your-uuid-here
+```
+
+The script pings `/start` when it begins, the base URL on success (whether or not an email was sent), and `/fail` if an exception occurs.
