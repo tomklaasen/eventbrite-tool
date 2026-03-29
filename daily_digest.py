@@ -64,7 +64,7 @@ def fetch_next_event(token: str, org_id: str) -> dict:
     r.raise_for_status()
     events = r.json().get("events", [])
     if not events:
-        sys.exit("No upcoming events found.")
+        return None
     return events[0]
 
 
@@ -211,6 +211,10 @@ def main():
     try:
         org_id = fetch_organization_id(token)
         event = fetch_next_event(token, org_id)
+        if event is None:
+            print("No upcoming events scheduled. Nothing to do.")
+            ping_healthchecks(healthchecks_url)
+            return
         event_id = event["id"]
         title = event.get("name", {}).get("text", event_id)
         print(f"Event: {title} (ID: {event_id})")
