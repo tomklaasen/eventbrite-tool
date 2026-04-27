@@ -83,6 +83,16 @@ def fetch_all_attendees(token: str, event_id: str) -> list[dict]:
     return attendees
 
 
+def _get_company_answer(attendee: dict) -> str:
+    """Return company from the custom badge question, falling back to profile company."""
+    for answer in attendee.get("answers", []):
+        if "bedrijf" in answer.get("question", "").lower():
+            text = answer.get("answer", "").strip()
+            if text:
+                return text
+    return attendee.get("profile", {}).get("company", "") or ""
+
+
 def load_snapshot(event_id: str) -> dict:
     path = SNAPSHOT_DIR / f"snapshot_{event_id}.json"
     if not path.exists():
@@ -111,7 +121,7 @@ def build_email(event: dict, new_attendees: list[dict], all_confirmed: list[dict
             p = a.get("profile", {})
             first = p.get("first_name", "") or ""
             last = p.get("last_name", "") or ""
-            company = p.get("company", "") or ""
+            company = _get_company_answer(a)
             rows.append(
                 f"<tr><td>{i}</td><td>{first}</td><td>{last}</td><td>{company}</td></tr>"
             )
@@ -247,7 +257,7 @@ def main():
                     "first_seen": today,
                     "first_name": p.get("first_name", ""),
                     "last_name": p.get("last_name", ""),
-                    "company": p.get("company", ""),
+                    "company": _get_company_answer(a),
                 }
         save_snapshot(event_id, snapshot)
 

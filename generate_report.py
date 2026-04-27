@@ -151,7 +151,7 @@ def write_csv(attendees: list[dict], csv_path: Path) -> None:
                 i,
                 profile.get("first_name", ""),
                 profile.get("last_name", ""),
-                profile.get("company", ""),
+                _get_company_answer(attendee),
                 _get_diet_answer(attendee),
             ])
 
@@ -235,7 +235,7 @@ def build_report(event: dict, attendees: list[dict], include_diet: bool = True, 
         profile = attendee.get("profile", {})
         first = profile.get("first_name", "—") or "—"
         last = profile.get("last_name", "—") or "—"
-        company = profile.get("company", "—") or "—"
+        company = _get_company_answer(attendee) or "—"
         if include_diet:
             diet = _get_diet_answer(attendee)
             lines.append(f"| {i} | {first} | {last} | {company} | {diet} |")
@@ -280,7 +280,7 @@ def generate_badges(attendees: list[dict], output_dir: Path, stem: str, speaker:
             writer.writerow([
                 profile.get("first_name", ""),
                 profile.get("last_name", ""),
-                profile.get("company", ""),
+                _get_company_answer(attendee),
             ])
 
     # Build a new .lbx pointing to the CSV — replace only the path attributes
@@ -332,6 +332,16 @@ def _normalize_name(s: str) -> str:
     return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode().lower()
 
 
+def _get_company_answer(attendee: dict) -> str:
+    """Return company from the custom badge question, falling back to profile company."""
+    for answer in attendee.get("answers", []):
+        if "bedrijf" in answer.get("question", "").lower():
+            text = answer.get("answer", "").strip()
+            if text:
+                return text
+    return attendee.get("profile", {}).get("company", "") or ""
+
+
 def _get_diet_answer(attendee: dict) -> str:
     """Return the diet restriction answer for an attendee, or '—' if none."""
     for answer in attendee.get("answers", []):
@@ -375,16 +385,16 @@ def build_attendance_report(token: str, org_id: str) -> tuple[str, list[dict]]:
             if key in name_mappings:
                 first, last = name_mappings[key]
                 key = f"{_normalize_name(first)} {_normalize_name(last)}".strip()
+            company = _get_company_answer(attendee)
             if key not in counts:
                 counts[key] = {
                     "first_name": first,
                     "last_name":  last,
-                    "company":    profile.get("company", ""),
+                    "company":    company,
                     "count":      0,
                 }
-            elif not counts[key]["company"] and profile.get("company"):
-                # Fill in company if we didn't have it yet
-                counts[key]["company"] = profile.get("company", "")
+            elif not counts[key]["company"] and company:
+                counts[key]["company"] = company
             counts[key]["count"] += 1
 
     rows = sorted(
