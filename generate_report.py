@@ -245,7 +245,7 @@ def build_report(event: dict, attendees: list[dict], include_diet: bool = True, 
     return "\n".join(lines)
 
 
-def generate_badges(attendees: list[dict], output_dir: Path, stem: str, speaker: dict | None = None) -> None:
+def generate_badges(attendees: list[dict], output_dir: Path, stem: str) -> None:
     """Generate a badges CSV and matching .lbx file for P-touch Editor.
 
     The .lbx is a copy of the template with its database reference updated to
@@ -262,12 +262,6 @@ def generate_badges(attendees: list[dict], output_dir: Path, stem: str, speaker:
     with csv_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["First Name", "Surname", "Company"])
-        if speaker and (speaker.get("first_name") or speaker.get("last_name")):
-            writer.writerow([
-                speaker.get("first_name", ""),
-                speaker.get("last_name", ""),
-                speaker.get("company", ""),
-            ])
         for attendee in attendees:
             profile = attendee.get("profile", {})
             writer.writerow([
@@ -469,10 +463,25 @@ def process_event(token: str, event: dict, output_dir: Path, badges: bool = Fals
         speaker = None
 
     attendees = fetch_all_attendees(token, event_id)
-    attendees.append({
+
+    # Prepend speaker and Tom so deduplication removes any Eventbrite duplicates
+    prefix = []
+    if speaker and (speaker.get("first_name") or speaker.get("last_name")):
+        prefix.append({
+            "status": "Attending",
+            "profile": {
+                "first_name": speaker.get("first_name", ""),
+                "last_name": speaker.get("last_name", ""),
+                "company": speaker.get("company", ""),
+            },
+            "answers": [],
+        })
+    prefix.append({
         "status": "Attending",
         "profile": {"first_name": "Tom", "last_name": "Klaasen", "company": "SoftwareCaptains"},
+        "answers": [],
     })
+    attendees = prefix + attendees
 
     name_mappings = load_name_mappings()
     confirmed = sorted(
@@ -506,7 +515,7 @@ def process_event(token: str, event: dict, output_dir: Path, badges: bool = Fals
     if badges:
         # Fixed filename so P-touch Editor retains its CSV access permission
         # across runs (macOS security-scoped bookmark stored by P-touch is path-based).
-        generate_badges(confirmed, output_dir, "badges", speaker=speaker)
+        generate_badges(confirmed, output_dir, "badges")
         print(f"    Badges:   {output_dir / 'badges'}.lbx")
 
 
