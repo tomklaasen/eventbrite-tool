@@ -188,12 +188,7 @@ def build_report(event: dict, attendees: list[dict], include_diet: bool = True, 
         venue.get("name", "") if venue else "Online / TBD"
     )
 
-    # Only count attendees who actually completed their order
-    confirmed = [
-        a for a in attendees
-        if a.get("status", "").lower() in ("attending", "checked_in")
-    ]
-    total = len(confirmed)
+    total = len(attendees)
 
     if include_diet:
         header = "| # | First Name | Last Name | Company | Diet |"
@@ -229,9 +224,7 @@ def build_report(event: dict, attendees: list[dict], include_diet: bool = True, 
         separator,
     ]
 
-    confirmed.sort(key=lambda a: a.get("profile", {}).get("first_name", "").lower())
-
-    for i, attendee in enumerate(confirmed, start=1):
+    for i, attendee in enumerate(attendees, start=1):
         profile = attendee.get("profile", {})
         first = profile.get("first_name", "—") or "—"
         last = profile.get("last_name", "—") or "—"
@@ -340,6 +333,24 @@ def _get_company_answer(attendee: dict) -> str:
             if text:
                 return text
     return attendee.get("profile", {}).get("company", "") or ""
+
+
+def _deduplicate_attendees(attendees: list[dict], name_mappings: dict | None = None) -> list[dict]:
+    """Return attendees with duplicates removed, keyed by normalized full name."""
+    seen: set[str] = set()
+    result = []
+    for a in attendees:
+        profile = a.get("profile", {})
+        first = profile.get("first_name", "").strip()
+        last = profile.get("last_name", "").strip()
+        key = f"{_normalize_name(first)} {_normalize_name(last)}".strip()
+        if name_mappings and key in name_mappings:
+            norm_first, norm_last = name_mappings[key]
+            key = f"{_normalize_name(norm_first)} {_normalize_name(norm_last)}".strip()
+        if key and key not in seen:
+            seen.add(key)
+            result.append(a)
+    return result
 
 
 def _get_diet_answer(attendee: dict) -> str:
@@ -463,7 +474,16 @@ def process_event(token: str, event: dict, output_dir: Path, badges: bool = Fals
         "profile": {"first_name": "Tom", "last_name": "Klaasen", "company": "SoftwareCaptains"},
     })
 
-    report = build_report(event, attendees, speaker=speaker)
+    name_mappings = load_name_mappings()
+    confirmed = sorted(
+        _deduplicate_attendees(
+            [a for a in attendees if a.get("status", "").lower() in ("attending", "checked_in")],
+            name_mappings,
+        ),
+        key=lambda a: a.get("profile", {}).get("first_name", "").lower(),
+    )
+
+    report = build_report(event, confirmed, speaker=speaker)
 
     safe_title = "".join(c if c.isalnum() or c in " -_" else "" for c in title)
     safe_title = safe_title.strip().replace(" ", "_")[:60]
@@ -475,15 +495,11 @@ def process_event(token: str, event: dict, output_dir: Path, badges: bool = Fals
     markdown_to_pdf(report, output_path.with_suffix(".pdf"))
     print(f"    PDF:      {output_path.with_suffix('.pdf')}")
 
-    speaker_report = build_report(event, attendees, include_diet=False, speaker=speaker)
+    speaker_report = build_report(event, confirmed, include_diet=False, speaker=speaker)
     speaker_pdf = output_dir / f"report_{event_date}_{safe_title}_speaker.pdf"
     markdown_to_pdf(speaker_report, speaker_pdf)
     print(f"    Speaker:  {speaker_pdf}")
 
-    confirmed = sorted(
-        (a for a in attendees if a.get("status", "").lower() in ("attending", "checked_in")),
-        key=lambda a: a.get("profile", {}).get("first_name", "").lower(),
-    )
     write_csv(confirmed, output_path.with_suffix(".csv"))
     print(f"    CSV:      {output_path.with_suffix('.csv')}")
 
