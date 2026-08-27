@@ -110,6 +110,7 @@ def build_email(event: dict, new_attendees: list[dict], all_confirmed: list[dict
     """Return (subject, html_body)."""
     title = event.get("name", {}).get("text", "Untitled Event")
     event_date = event.get("start", {}).get("local", "")[:10]
+    admin_url = f"https://www.eventbrite.com/manage/events/{event['id']}/attendees"
     total = len(all_confirmed)
     count = len(new_attendees)
 
@@ -160,7 +161,9 @@ def build_email(event: dict, new_attendees: list[dict], all_confirmed: list[dict
 <head><meta charset="utf-8"></head>
 <body style="font-family:sans-serif;font-size:14px;color:#111;margin:0;padding:20px;">
   <h2 style="margin-bottom:4px;">{title}</h2>
-  <p style="color:#666;margin-top:0;">{event_date}</p>
+  <p style="color:#666;margin-top:0;">
+    {event_date} &middot; <a href="{admin_url}" style="color:#1a73e8;">Manage on Eventbrite</a>
+  </p>
 
   <h3>New registrations ({count})</h3>
   {new_table}
