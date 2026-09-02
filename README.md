@@ -37,7 +37,7 @@ brew install pango libffi
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install requests python-dotenv markdown weasyprint
+pip install requests python-dotenv markdown weasyprint pytest
 ```
 
 2. **Configure your API token:**
@@ -144,3 +144,15 @@ HEALTHCHECKS_URL=https://hc-ping.com/your-uuid-here
 ```
 
 The script pings `/start` when it begins, the base URL on success (whether or not an email was sent), and `/fail` if an exception occurs.
+
+## Tests
+
+```bash
+source .venv/bin/activate
+python3 -m pytest
+```
+
+The suite covers `daily_digest.py` end to end with the Eventbrite API and SMTP
+stubbed out, so it never makes a network call or sends mail. Snapshots are
+written to a temporary directory, which lets a test run `main()` several times
+in a row and assert on how state accumulates between runs.

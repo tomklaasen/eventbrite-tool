@@ -5,3 +5,4 @@ name_mappings.json
 speakers.json
 __pycache__/
 .DS_Store
+.pytest_cache/
