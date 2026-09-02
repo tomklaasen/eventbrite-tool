@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-Sends a daily digest email when new registrations have come in for the next
-upcoming Eventbrite event.
+Sends a daily digest email when new registrations have come in for any of your
+live upcoming Eventbrite events.
 
-Compares current attendees against a snapshot from the previous run.
-Only sends an email if there are new registrations since the last run.
+Compares current attendees against a snapshot from the previous run (one
+snapshot per event). Only sends an email if there are new registrations since
+the last run; every event with new registrations is combined into one email.
 
 Setup:
     Add to .env:
@@ -57,15 +58,20 @@ def fetch_organization_id(token: str) -> str:
     return orgs[0]["id"]
 
 
-def fetch_next_event(token: str, org_id: str) -> dict:
+def fetch_all_live_events(token: str, org_id: str) -> list[dict]:
+    """Return all live/started events for the organization, soonest first."""
+    events = []
     url = f"{API_BASE}/organizations/{org_id}/events/"
-    params = {"status": "live,started", "order_by": "start_asc", "page_size": 1, "expand": "venue"}
-    r = requests.get(url, headers=get_headers(token), params=params)
-    r.raise_for_status()
-    events = r.json().get("events", [])
-    if not events:
-        return None
-    return events[0]
+    params = {"status": "live,started", "order_by": "start_asc", "expand": "venue"}
+    while url:
+        r = requests.get(url, headers=get_headers(token), params=params)
+        r.raise_for_status()
+        data = r.json()
+        events.extend(data.get("events", []))
+        pagination = data.get("pagination", {})
+        url = pagination.get("next_url") if pagination.get("has_more_items") else None
+        params = {}
+    return events
 
 
 def fetch_all_attendees(token: str, event_id: str) -> list[dict]:
@@ -106,15 +112,18 @@ def save_snapshot(event_id: str, snapshot: dict) -> None:
     path.write_text(json.dumps(snapshot, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
-def build_email(event: dict, new_attendees: list[dict], all_confirmed: list[dict]) -> tuple[str, str]:
-    """Return (subject, html_body)."""
-    title = event.get("name", {}).get("text", "Untitled Event")
-    event_date = event.get("start", {}).get("local", "")[:10]
-    admin_url = f"https://www.eventbrite.com/manage/events/{event['id']}/attendees"
-    total = len(all_confirmed)
-    count = len(new_attendees)
+def build_email(sections: list[tuple[dict, list[dict], list[dict]]]) -> tuple[str, str]:
+    """Return (subject, html_body) for every event that has new registrations.
 
-    subject = f"{count} new registration{'s' if count != 1 else ''} for {title}"
+    Each section is (event, new_attendees, all_confirmed).
+    """
+    total_new = sum(len(new) for _, new, _ in sections)
+
+    if len(sections) == 1:
+        title = sections[0][0].get("name", {}).get("text", "Untitled Event")
+        subject = f"{total_new} new registration{'s' if total_new != 1 else ''} for {title}"
+    else:
+        subject = f"{total_new} new registrations across {len(sections)} events"
 
     def attendee_rows(attendees: list[dict]) -> str:
         rows = []
@@ -152,24 +161,33 @@ def build_email(event: dict, new_attendees: list[dict], all_confirmed: list[dict
   </tbody>
 </table>"""
 
-    # Inject td style via a quick replace since we're building HTML as strings
-    new_table = make_table(new_attendees).replace("<td>", f'<td style="{td_style}">')
-    all_table = make_table(all_confirmed).replace("<td>", f'<td style="{td_style}">')
+    def make_section(event: dict, new_attendees: list[dict], all_confirmed: list[dict]) -> str:
+        title = event.get("name", {}).get("text", "Untitled Event")
+        event_date = event.get("start", {}).get("local", "")[:10]
+        admin_url = f"https://www.eventbrite.com/manage/events/{event['id']}/attendees"
 
-    html = f"""<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"></head>
-<body style="font-family:sans-serif;font-size:14px;color:#111;margin:0;padding:20px;">
+        # Inject td style via a quick replace since we're building HTML as strings
+        new_table = make_table(new_attendees).replace("<td>", f'<td style="{td_style}">')
+
+        return f"""
   <h2 style="margin-bottom:4px;">{title}</h2>
   <p style="color:#666;margin-top:0;">
     {event_date} &middot; <a href="{admin_url}" style="color:#1a73e8;">Manage on Eventbrite</a>
   </p>
 
-  <h3>New registrations ({count})</h3>
+  <h3>New registrations ({len(new_attendees)})</h3>
   {new_table}
 
-  <h3 style="margin-top:32px;">All registrations ({total})</h3>
-  {all_table}
+  <p style="margin-top:24px;">Total registrations: <strong>{len(all_confirmed)}</strong></p>"""
+
+    separator = '\n  <hr style="border:none;border-top:1px solid #ddd;margin:40px 0;">\n'
+    body = separator.join(make_section(*section) for section in sections)
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="font-family:sans-serif;font-size:14px;color:#111;margin:0;padding:20px;">
+{body}
 
   <p style="color:#999;font-size:11px;margin-top:32px;">
     Sent by eventbrite-tool on {datetime.now().strftime('%Y-%m-%d at %H:%M')}
@@ -223,48 +241,58 @@ def main():
 
     try:
         org_id = fetch_organization_id(token)
-        event = fetch_next_event(token, org_id)
-        if event is None:
+        events = fetch_all_live_events(token, org_id)
+        if not events:
             print("No upcoming events scheduled. Nothing to do.")
             ping_healthchecks(healthchecks_url)
             return
-        event_id = event["id"]
-        title = event.get("name", {}).get("text", event_id)
-        print(f"Event: {title} (ID: {event_id})")
 
-        snapshot = load_snapshot(event_id)
-        known_ids = set(snapshot.keys())
+        print(f"Live events: {len(events)}")
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        sections = []
 
-        attendees = fetch_all_attendees(token, event_id)
-        confirmed = [
-            a for a in attendees
-            if a.get("status", "").lower() in ("attending", "checked_in")
-        ]
-        confirmed.sort(key=lambda a: a.get("profile", {}).get("first_name", "").lower())
+        for event in events:
+            event_id = event["id"]
+            title = event.get("name", {}).get("text", event_id)
 
-        new_attendees = [a for a in confirmed if a["id"] not in known_ids]
+            snapshot = load_snapshot(event_id)
+            known_ids = set(snapshot.keys())
 
-        if not new_attendees:
+            attendees = fetch_all_attendees(token, event_id)
+            confirmed = [
+                a for a in attendees
+                if a.get("status", "").lower() in ("attending", "checked_in")
+            ]
+            confirmed.sort(key=lambda a: a.get("profile", {}).get("first_name", "").lower())
+
+            new_attendees = [a for a in confirmed if a["id"] not in known_ids]
+
+            if not new_attendees:
+                print(f"  {title} (ID: {event_id}): no new registrations")
+                continue
+
+            print(f"  {title} (ID: {event_id}): {len(new_attendees)} new")
+
+            # Update snapshot with all current confirmed attendees
+            for a in confirmed:
+                if a["id"] not in snapshot:
+                    p = a.get("profile", {})
+                    snapshot[a["id"]] = {
+                        "first_seen": today,
+                        "first_name": p.get("first_name", ""),
+                        "last_name": p.get("last_name", ""),
+                        "company": _get_company_answer(a),
+                    }
+            save_snapshot(event_id, snapshot)
+
+            sections.append((event, new_attendees, confirmed))
+
+        if not sections:
             print("No new registrations since last run. No email sent.")
             ping_healthchecks(healthchecks_url)
             return
 
-        print(f"New registrations: {len(new_attendees)}")
-
-        # Update snapshot with all current confirmed attendees
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        for a in confirmed:
-            if a["id"] not in snapshot:
-                p = a.get("profile", {})
-                snapshot[a["id"]] = {
-                    "first_seen": today,
-                    "first_name": p.get("first_name", ""),
-                    "last_name": p.get("last_name", ""),
-                    "company": _get_company_answer(a),
-                }
-        save_snapshot(event_id, snapshot)
-
-        subject, html = build_email(event, new_attendees, confirmed)
+        subject, html = build_email(sections)
         send_email(subject, html, gmail_user, app_password, digest_to)
         print(f"Email sent to {digest_to}: {subject}")
         ping_healthchecks(healthchecks_url)
