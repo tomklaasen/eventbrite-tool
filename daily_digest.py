@@ -4,8 +4,9 @@ Sends a daily digest email when new registrations have come in for any of your
 live upcoming Eventbrite events.
 
 Compares current attendees against a snapshot from the previous run (one
-snapshot per event). Only sends an email if there are new registrations since
-the last run; every event with new registrations is combined into one email.
+snapshot per event). Only sends an email if there are new registrations or
+cancellations since the last run; every event with changes is combined into
+one email.
 
 Setup:
     Add to .env:
@@ -100,10 +101,21 @@ def _get_company_answer(attendee: dict) -> str:
 
 
 def load_snapshot(event_id: str) -> dict:
+    """Return {"attendees": {...}, "cancelled": {...}} for the event.
+
+    Snapshots written before cancellation tracking are a flat attendee map;
+    read those as "nothing cancelled has been reported yet".
+    """
     path = SNAPSHOT_DIR / f"snapshot_{event_id}.json"
     if not path.exists():
-        return {}
-    return json.loads(path.read_text(encoding="utf-8"))
+        return {"attendees": {}, "cancelled": {}}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if "attendees" not in data:
+        return {"attendees": data, "cancelled": {}}
+    return {
+        "attendees": data.get("attendees", {}),
+        "cancelled": data.get("cancelled", {}),
+    }
 
 
 def save_snapshot(event_id: str, snapshot: dict) -> None:
@@ -112,26 +124,59 @@ def save_snapshot(event_id: str, snapshot: dict) -> None:
     path.write_text(json.dumps(snapshot, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
-def build_email(sections: list[tuple[dict, list[dict], list[dict]]]) -> tuple[str, str]:
-    """Return (subject, html_body) for every event that has new registrations.
+def _attendee_person(attendee: dict) -> tuple[str, str, str]:
+    """Normalize a live attendee record to (first_name, last_name, company)."""
+    p = attendee.get("profile", {})
+    return (
+        p.get("first_name", "") or "",
+        p.get("last_name", "") or "",
+        _get_company_answer(attendee),
+    )
 
-    Each section is (event, new_attendees, all_confirmed).
+
+def _snapshot_person(entry: dict) -> tuple[str, str, str]:
+    """Normalize a stored snapshot entry to (first_name, last_name, company).
+
+    Cancelled attendees may no longer be returned by the API at all, so their
+    details come from what we recorded when we first saw them.
     """
-    total_new = sum(len(new) for _, new, _ in sections)
+    return (
+        entry.get("first_name", "") or "",
+        entry.get("last_name", "") or "",
+        entry.get("company", "") or "",
+    )
+
+
+def _plural(count: int, word: str) -> str:
+    return f"{count} {word}{'' if count == 1 else 's'}"
+
+
+def build_email(sections: list[tuple[dict, list, list, int]]) -> tuple[str, str]:
+    """Return (subject, html_body) for every event that has changes.
+
+    Each section is (event, new_people, cancelled_people, total_confirmed),
+    where the people lists hold (first_name, last_name, company) triples.
+    """
+    total_new = sum(len(new) for _, new, _, _ in sections)
+    total_cancelled = sum(len(cancelled) for _, _, cancelled, _ in sections)
 
     if len(sections) == 1:
         title = sections[0][0].get("name", {}).get("text", "Untitled Event")
-        subject = f"{total_new} new registration{'s' if total_new != 1 else ''} for {title}"
+        where = f"for {title}"
     else:
-        subject = f"{total_new} new registrations across {len(sections)} events"
+        where = f"across {len(sections)} events"
 
-    def attendee_rows(attendees: list[dict]) -> str:
+    if total_cancelled == 0:
+        what = _plural(total_new, "new registration")
+    elif total_new == 0:
+        what = _plural(total_cancelled, "cancellation")
+    else:
+        what = f"{total_new} new, {_plural(total_cancelled, 'cancellation')}"
+    subject = f"{what} {where}"
+
+    def attendee_rows(people: list[tuple[str, str, str]]) -> str:
         rows = []
-        for i, a in enumerate(attendees, start=1):
-            p = a.get("profile", {})
-            first = p.get("first_name", "") or ""
-            last = p.get("last_name", "") or ""
-            company = _get_company_answer(a)
+        for i, (first, last, company) in enumerate(people, start=1):
             rows.append(
                 f"<tr><td>{i}</td><td>{first}</td><td>{last}</td><td>{company}</td></tr>"
             )
@@ -145,7 +190,8 @@ def build_email(sections: list[tuple[dict, list[dict], list[dict]]]) -> tuple[st
     )
     td_style = "border:1px solid #ccc;padding:6px 10px;"
 
-    def make_table(attendees: list[dict]) -> str:
+    def make_table(people: list[tuple[str, str, str]]) -> str:
+        # Inject td style via a quick replace since we're building HTML as strings
         return f"""
 <table style="{table_style}">
   <thead>
@@ -157,17 +203,31 @@ def build_email(sections: list[tuple[dict, list[dict], list[dict]]]) -> tuple[st
     </tr>
   </thead>
   <tbody>
-    {attendee_rows(attendees)}
+    {attendee_rows(people)}
   </tbody>
-</table>"""
+</table>""".replace("<td>", f'<td style="{td_style}">')
 
-    def make_section(event: dict, new_attendees: list[dict], all_confirmed: list[dict]) -> str:
+    def make_section(
+        event: dict,
+        new_people: list[tuple[str, str, str]],
+        cancelled_people: list[tuple[str, str, str]],
+        total_confirmed: int,
+    ) -> str:
         title = event.get("name", {}).get("text", "Untitled Event")
         event_date = event.get("start", {}).get("local", "")[:10]
         admin_url = f"https://www.eventbrite.com/manage/events/{event['id']}/attendees"
 
-        # Inject td style via a quick replace since we're building HTML as strings
-        new_table = make_table(new_attendees).replace("<td>", f'<td style="{td_style}">')
+        blocks = []
+        if new_people:
+            blocks.append(
+                f"""  <h3>New registrations ({len(new_people)})</h3>
+  {make_table(new_people)}"""
+            )
+        if cancelled_people:
+            blocks.append(
+                f"""  <h3 style="margin-top:32px;">Cancellations ({len(cancelled_people)})</h3>
+  {make_table(cancelled_people)}"""
+            )
 
         return f"""
   <h2 style="margin-bottom:4px;">{title}</h2>
@@ -175,10 +235,9 @@ def build_email(sections: list[tuple[dict, list[dict], list[dict]]]) -> tuple[st
     {event_date} &middot; <a href="{admin_url}" style="color:#1a73e8;">Manage on Eventbrite</a>
   </p>
 
-  <h3>New registrations ({len(new_attendees)})</h3>
-  {new_table}
+{chr(10).join(blocks)}
 
-  <p style="margin-top:24px;">Total registrations: <strong>{len(all_confirmed)}</strong></p>"""
+  <p style="margin-top:24px;">Total registrations: <strong>{total_confirmed}</strong></p>"""
 
     separator = '\n  <hr style="border:none;border-top:1px solid #ddd;margin:40px 0;">\n'
     body = separator.join(make_section(*section) for section in sections)
@@ -256,7 +315,8 @@ def main():
             title = event.get("name", {}).get("text", event_id)
 
             snapshot = load_snapshot(event_id)
-            known_ids = set(snapshot.keys())
+            known = snapshot["attendees"]
+            reported_cancelled = snapshot["cancelled"]
 
             attendees = fetch_all_attendees(token, event_id)
             confirmed = [
@@ -265,30 +325,80 @@ def main():
             ]
             confirmed.sort(key=lambda a: a.get("profile", {}).get("first_name", "").lower())
 
-            new_attendees = [a for a in confirmed if a["id"] not in known_ids]
+            confirmed_ids = {a["id"] for a in confirmed}
+            new_attendees = [a for a in confirmed if a["id"] not in known]
 
-            if not new_attendees:
-                print(f"  {title} (ID: {event_id}): no new registrations")
+            # An empty fetch against a non-empty snapshot is far more likely an
+            # API hiccup than everyone cancelling at once — don't purge on it.
+            if known and not confirmed_ids:
+                print(
+                    f"  {title} (ID: {event_id}): no attendees returned but "
+                    f"{len(known)} known — skipping, assuming a fetch problem"
+                )
                 continue
 
-            print(f"  {title} (ID: {event_id}): {len(new_attendees)} new")
+            # Cancellations come from two signals. Eventbrite keeps returning a
+            # cancelled record (flagged not-attending), which is the only way to
+            # catch someone who registered and cancelled between two runs. A
+            # record that disappears from the API entirely is caught by diffing
+            # against what we knew.
+            cancelled = {
+                a["id"]: _attendee_person(a)
+                for a in attendees if a["id"] not in confirmed_ids
+            }
+            for attendee_id in set(known) - confirmed_ids - set(cancelled):
+                cancelled[attendee_id] = _snapshot_person(known[attendee_id])
 
-            # Update snapshot with all current confirmed attendees
+            newly_cancelled = {
+                attendee_id: person
+                for attendee_id, person in cancelled.items()
+                if attendee_id not in reported_cancelled
+            }
+
+            if not new_attendees and not newly_cancelled:
+                print(f"  {title} (ID: {event_id}): no changes")
+                continue
+
+            print(
+                f"  {title} (ID: {event_id}): {len(new_attendees)} new, "
+                f"{len(newly_cancelled)} cancelled"
+            )
+
             for a in confirmed:
-                if a["id"] not in snapshot:
+                if a["id"] not in known:
                     p = a.get("profile", {})
-                    snapshot[a["id"]] = {
+                    known[a["id"]] = {
                         "first_seen": today,
                         "first_name": p.get("first_name", ""),
                         "last_name": p.get("last_name", ""),
                         "company": _get_company_answer(a),
                     }
+            # Drop cancelled attendees so a re-registration counts as new again.
+            for attendee_id in cancelled:
+                known.pop(attendee_id, None)
+            # Remember what we reported, so each cancellation is emailed once.
+            for attendee_id, person in newly_cancelled.items():
+                reported_cancelled[attendee_id] = {
+                    "reported_on": today,
+                    "first_name": person[0],
+                    "last_name": person[1],
+                    "company": person[2],
+                }
+            # Someone who is attending again clears their cancellation record,
+            # so a future cancellation of theirs still gets reported.
+            for attendee_id in confirmed_ids:
+                reported_cancelled.pop(attendee_id, None)
             save_snapshot(event_id, snapshot)
 
-            sections.append((event, new_attendees, confirmed))
+            sections.append((
+                event,
+                [_attendee_person(a) for a in new_attendees],
+                sorted(newly_cancelled.values(), key=lambda person: person[0].lower()),
+                len(confirmed),
+            ))
 
         if not sections:
-            print("No new registrations since last run. No email sent.")
+            print("No changes since last run. No email sent.")
             ping_healthchecks(healthchecks_url)
             return
 
